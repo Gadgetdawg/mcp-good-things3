@@ -1,41 +1,43 @@
 use framework "Foundation"
 use scripting additions
 
+-- A2: Return a single to-do record by id. Same dict shape as A1/A3.
+
 on run argv
     if (count of argv) < 1 then
-        error "List name required as argument"
+        error "Todo id required as argument"
     end if
-    
-    set listName to item 1 of argv
-    
-    -- Validate list name
-    if listName is not in {"Today", "Inbox", "Anytime", "Upcoming", "Someday", "Logbook", "Trash"} then
-        error "Invalid list name. Valid lists: Today, Inbox, Anytime, Upcoming, Someday, Logbook, Trash"
-    end if
-    
-    return my get_tasks_from_list(listName)
+
+    set todoId to item 1 of argv
+    return my get_todo_by_id(todoId)
 end run
 
 on todo_to_dict(theTodo)
     set theDict to current application's NSMutableDictionary's dictionary()
-    
+
     tell application "Things3"
         theDict's setValue:(id of theTodo) forKey:"id"
         theDict's setValue:(name of theTodo) forKey:"title"
-        
+
         if notes of theTodo is not missing value then
             theDict's setValue:(notes of theTodo) forKey:"notes"
         else
             theDict's setValue:"" forKey:"notes"
         end if
-        
+
         if due date of theTodo is not missing value then
             theDict's setValue:((due date of theTodo) as string) forKey:"due_date"
         else
             theDict's setValue:"" forKey:"due_date"
         end if
-        
-        -- Add status
+
+        if activation date of theTodo is not missing value then
+            theDict's setValue:((activation date of theTodo) as string) forKey:"when_date"
+        else
+            theDict's setValue:"" forKey:"when_date"
+        end if
+
+        -- Status
         if status of theTodo is completed then
             theDict's setValue:"completed" forKey:"status"
         else if status of theTodo is canceled then
@@ -43,14 +45,20 @@ on todo_to_dict(theTodo)
         else
             theDict's setValue:"open" forKey:"status"
         end if
-        
-        -- Add when date for scheduled tasks
-        if activation date of theTodo is not missing value then
-            theDict's setValue:((activation date of theTodo) as string) forKey:"when_date"
-        else
-            theDict's setValue:"" forKey:"when_date"
-        end if
-        
+
+        -- Creation/modification stamps — useful for verify-after-write
+        try
+            if creation date of theTodo is not missing value then
+                theDict's setValue:((creation date of theTodo) as string) forKey:"creation_date"
+            end if
+        end try
+        try
+            if modification date of theTodo is not missing value then
+                theDict's setValue:((modification date of theTodo) as string) forKey:"modification_date"
+            end if
+        end try
+
+        -- Tags
         set tagList to tag names of theTodo
         if tagList is not {} then
             set AppleScript's text item delimiters to ","
@@ -60,8 +68,8 @@ on todo_to_dict(theTodo)
         else
             theDict's setValue:"" forKey:"tags"
         end if
-        
-        -- Get project/area info (A3: expose distinct id + name fields)
+
+        -- Project/area (A3 shape)
         set parentList to ""
         set parentType to ""
         set projectIdVal to ""
@@ -73,7 +81,6 @@ on todo_to_dict(theTodo)
             set parentType to "project"
             set projectIdVal to id of project of theTodo
             set projectTitleVal to name of project of theTodo
-            -- A project can itself belong to an area; surface that too
             if area of project of theTodo is not missing value then
                 set areaIdVal to id of area of project of theTodo
                 set areaNameVal to name of area of project of theTodo
@@ -90,42 +97,35 @@ on todo_to_dict(theTodo)
         theDict's setValue:projectTitleVal forKey:"project_title"
         theDict's setValue:areaIdVal forKey:"area_id"
         theDict's setValue:areaNameVal forKey:"area_name"
+
+        -- Checklist items: Things3's AppleScript dictionary doesn't expose
+        -- checklist items as a readable collection (write-only via URL scheme),
+        -- so we return an empty array for shape compatibility.
+        set clArray to current application's NSMutableArray's array()
+        theDict's setValue:clArray forKey:"checklist"
     end tell
-    
+
     return theDict
 end todo_to_dict
 
-on todos_to_json(theTodos)
-    set todoArray to current application's NSMutableArray's array()
-    
-    repeat with aTodo in theTodos
-        set todoDict to todo_to_dict(aTodo)
-        todoArray's addObject:todoDict
-    end repeat
-    
-    set {jsonData, theError} to current application's NSJSONSerialization's dataWithJSONObject:todoArray options:0 |error|:(reference)
-    
+on get_todo_by_id(todoId)
+    tell application "Things3"
+        try
+            set theTodo to to do id todoId
+        on error
+            return "{\"error\": \"Todo not found with id " & todoId & "\"}"
+        end try
+    end tell
+
+    set todoDict to my todo_to_dict(theTodo)
+
+    set {jsonData, theError} to current application's NSJSONSerialization's dataWithJSONObject:todoDict options:0 |error|:(reference)
+
     if jsonData is missing value then
         error (theError's localizedDescription() as text)
     end if
-    
-    set jsonString to current application's NSString's alloc()'s initWithData:jsonData encoding:(current application's NSUTF8StringEncoding)
-    
-    return jsonString as text
-end todos_to_json
 
-on get_tasks_from_list(listName)
-    tell application "Things3"
-        try
-            set theTodos to to dos of list listName
-            
-            if (count of theTodos) is 0 then
-                return "[]"
-            else
-                return my todos_to_json(theTodos)
-            end if
-        on error errMsg
-            return "{\"error\": \"" & errMsg & "\"}"
-        end try
-    end tell
-end get_tasks_from_list
+    set jsonString to current application's NSString's alloc()'s initWithData:jsonData encoding:(current application's NSUTF8StringEncoding)
+
+    return jsonString as text
+end get_todo_by_id

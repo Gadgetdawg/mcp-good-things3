@@ -241,6 +241,233 @@ class AppleScriptHandler:
             return 0
     
     @staticmethod
+    def get_todo_by_id(todo_id: str) -> dict[str, Any]:
+        """
+        Retrieves a single to-do record by id (A2).
+
+        Returns an empty dict if not found. Raises RuntimeError on AppleScript
+        failure.
+        """
+        if not todo_id:
+            raise ValueError("todo_id is required")
+
+        try:
+            result = subprocess.run(
+                [
+                    'osascript',
+                    str(AppleScriptHandler.get_script_path("get_todo_by_id.applescript")),
+                    todo_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            output = result.stdout.strip()
+            if not output:
+                return {}
+
+            if output.startswith('{"error":'):
+                error_data = json.loads(output)
+                raise RuntimeError(error_data.get("error", "Unknown error"))
+
+            todo = json.loads(output)
+            if "when" in todo and "when_date" not in todo:
+                todo["when_date"] = todo["when"]
+            return AppleScriptHandler.normalize_task(todo)
+
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON from get_todo_by_id: {e}")
+            return {}
+        except subprocess.CalledProcessError as e:
+            error_msg = "AppleScript failed: get_todo_by_id\n"
+            if e.stderr:
+                error_msg += f"Error: {e.stderr}\n"
+            if e.returncode:
+                error_msg += f"Exit code: {e.returncode}"
+            raise RuntimeError(error_msg)
+
+    @staticmethod
+    def get_project_details(project_id: str) -> dict[str, Any]:
+        """
+        Retrieves full project record by id (A4): notes, status, dates, area,
+        headings, todo counts.
+        """
+        if not project_id:
+            raise ValueError("project_id is required")
+
+        try:
+            result = subprocess.run(
+                [
+                    'osascript',
+                    str(AppleScriptHandler.get_script_path("get_project_details.applescript")),
+                    project_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            output = result.stdout.strip()
+            if not output:
+                return {}
+
+            if output.startswith('{"error":'):
+                error_data = json.loads(output)
+                raise RuntimeError(error_data.get("error", "Unknown error"))
+
+            return json.loads(output)
+
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON from project details: {e}")
+            return {}
+        except subprocess.CalledProcessError as e:
+            error_msg = "AppleScript failed: get_project_details\n"
+            if e.stderr:
+                error_msg += f"Error: {e.stderr}\n"
+            if e.returncode:
+                error_msg += f"Exit code: {e.returncode}"
+            raise RuntimeError(error_msg)
+
+    @staticmethod
+    def get_todos_for_project(project_id: str, include_completed: bool = False) -> list[dict[str, Any]]:
+        """
+        Retrieves all to-dos belonging to a specific project by id (A1).
+
+        Args:
+            project_id: The Things3 project id.
+            include_completed: If True, also return completed/canceled todos.
+                               Default False (open items only).
+        """
+        if not project_id:
+            raise ValueError("project_id is required")
+
+        try:
+            flag = "1" if include_completed else "0"
+            result = subprocess.run(
+                [
+                    'osascript',
+                    str(AppleScriptHandler.get_script_path("get_todos_for_project.applescript")),
+                    project_id,
+                    flag,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            output = result.stdout.strip()
+            if not output:
+                return []
+
+            # Error sentinel from AppleScript
+            if output.startswith('{"error":'):
+                error_data = json.loads(output)
+                raise RuntimeError(error_data.get("error", "Unknown error"))
+
+            todos = json.loads(output)
+
+            normalized_todos = []
+            for todo in todos:
+                if "when" in todo and "when_date" not in todo:
+                    todo["when_date"] = todo["when"]
+                normalized_todos.append(AppleScriptHandler.normalize_task(todo))
+
+            return normalized_todos
+
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON from project todos: {e}")
+            return []
+        except subprocess.CalledProcessError as e:
+            error_msg = "AppleScript failed: get_todos_for_project\n"
+            if e.stderr:
+                error_msg += f"Error: {e.stderr}\n"
+            if e.returncode:
+                error_msg += f"Exit code: {e.returncode}"
+            raise RuntimeError(error_msg)
+
+    @staticmethod
+    def create_tag(name: str, parent_name: str = None) -> dict[str, Any]:
+        """
+        Create a tag in the Things3 tag library (Gap 4 fix).
+
+        Idempotent: if the tag already exists, returns its current state without
+        error.  Optionally nests it under an existing parent tag.
+
+        Returns a dict with keys:
+            status   → "created" | "exists"
+            name     → the tag name as stored by Things3
+            parent   → parent tag name if one was set, else None
+        Raises RuntimeError on AppleScript failure.
+        """
+        if not name:
+            raise ValueError("name is required")
+
+        safe_name = AppleScriptHandler.safe_string_for_applescript(name)
+        safe_parent = AppleScriptHandler.safe_string_for_applescript(parent_name or "")
+
+        if parent_name:
+            script = f'''
+            tell application "Things3"
+                try
+                    -- Check if tag already exists
+                    set existingTags to tags whose name is "{safe_name}"
+                    if (count of existingTags) > 0 then
+                        return "EXISTS"
+                    end if
+                    -- Find parent tag
+                    set parentTags to tags whose name is "{safe_parent}"
+                    if (count of parentTags) = 0 then
+                        return "PARENT_NOT_FOUND"
+                    end if
+                    set parentTag to item 1 of parentTags
+                    -- Create nested tag
+                    make new tag with properties {{name: "{safe_name}", parent tag: parentTag}}
+                    return "CREATED"
+                on error errMsg
+                    return "ERROR:" & errMsg
+                end try
+            end tell
+            '''
+        else:
+            script = f'''
+            tell application "Things3"
+                try
+                    -- Check if tag already exists
+                    set existingTags to tags whose name is "{safe_name}"
+                    if (count of existingTags) > 0 then
+                        return "EXISTS"
+                    end if
+                    -- Create top-level tag
+                    make new tag with properties {{name: "{safe_name}"}}
+                    return "CREATED"
+                on error errMsg
+                    return "ERROR:" & errMsg
+                end try
+            end tell
+            '''
+
+        try:
+            result = AppleScriptHandler.run_script(script).strip()
+        except RuntimeError as e:
+            raise RuntimeError(f"create_tag AppleScript failed: {e}") from e
+
+        if result == "CREATED":
+            return {"status": "created", "name": name, "parent": parent_name}
+        if result == "EXISTS":
+            return {"status": "exists", "name": name, "parent": parent_name}
+        if result == "PARENT_NOT_FOUND":
+            raise RuntimeError(
+                f"Parent tag '{parent_name}' not found in Things3 tag library. "
+                "Create the parent first, then retry."
+            )
+        if result.startswith("ERROR:"):
+            raise RuntimeError(result[len("ERROR:"):].strip())
+
+        # Unexpected response — treat as error
+        raise RuntimeError(f"Unexpected response from create_tag: {result!r}")
+
+    @staticmethod
     def get_tasks_from_list(list_name: str) -> list[dict[str, Any]]:
         """
         Retrieves tasks from any Things3 list using JSON serialization.

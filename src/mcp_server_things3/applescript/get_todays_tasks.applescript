@@ -40,6 +40,35 @@ on todo_to_dict(theTodo)
         set isEvening to false
         -- This is a simplification - detecting evening tasks is complex in AppleScript
         theDict's setValue:isEvening forKey:"is_evening"
+
+        -- Get project/area info (A3: expose distinct id + name fields)
+        set parentList to ""
+        set parentType to ""
+        set projectIdVal to ""
+        set projectTitleVal to ""
+        set areaIdVal to ""
+        set areaNameVal to ""
+        if project of theTodo is not missing value then
+            set parentList to name of project of theTodo
+            set parentType to "project"
+            set projectIdVal to id of project of theTodo
+            set projectTitleVal to name of project of theTodo
+            if area of project of theTodo is not missing value then
+                set areaIdVal to id of area of project of theTodo
+                set areaNameVal to name of area of project of theTodo
+            end if
+        else if area of theTodo is not missing value then
+            set parentList to name of area of theTodo
+            set parentType to "area"
+            set areaIdVal to id of area of theTodo
+            set areaNameVal to name of area of theTodo
+        end if
+        theDict's setValue:parentList forKey:"list"
+        theDict's setValue:parentType forKey:"list_type"
+        theDict's setValue:projectIdVal forKey:"project_id"
+        theDict's setValue:projectTitleVal forKey:"project_title"
+        theDict's setValue:areaIdVal forKey:"area_id"
+        theDict's setValue:areaNameVal forKey:"area_name"
     end tell
     
     return theDict
