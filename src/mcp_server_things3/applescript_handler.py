@@ -1,7 +1,11 @@
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class AppleScriptHandler:
@@ -120,11 +124,13 @@ class AppleScriptHandler:
             return normalized_tasks
             
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from today's tasks: {e}")
-            return []
+            # Malformed output is a FAILURE, not an empty result. Raise.
+            raise RuntimeError(f"get_todays_tasks returned unparseable output: {e}") from e
         except Exception as e:
-            print(f"Error retrieving today's tasks: {e}")
-            return []
+            # DO NOT RETURN [] HERE. This used to swallow every error — including a TCC Automation
+            # denial — and the caller rendered it as "No todos found". On an unattended machine that is
+            # a task system calmly reporting there is nothing to do.
+            raise RuntimeError(f"get_todays_tasks failed: {e}") from e
 
     @staticmethod
     def get_projects() -> list[dict[str, str]]:
@@ -142,11 +148,9 @@ class AppleScriptHandler:
             return json.loads(result)
             
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from projects: {e}")
-            return []
+            raise RuntimeError(f"get_projects returned unparseable output: {e}") from e
         except Exception as e:
-            print(f"Error retrieving projects: {e}")
-            return []
+            raise RuntimeError(f"get_projects failed: {e}") from e
 
     @staticmethod
     def validate_things3_access() -> bool:
@@ -161,7 +165,11 @@ class AppleScriptHandler:
             '''
             result = AppleScriptHandler.run_script(script)
             return "Things3" in result
-        except Exception:
+        except Exception as e:
+            # Stays boolean on purpose — callers use it as an availability gate. But LOG THE REASON:
+            # "Things3 is not available" reads as not-installed, while the real cause is often a TCC
+            # Automation denial. Without this line the distinction is invisible.
+            logger.warning(f"validate_things3_access failed ({type(e).__name__}): {e}")
             return False
 
     @staticmethod
@@ -184,8 +192,11 @@ class AppleScriptHandler:
         try:
             result = AppleScriptHandler.run_script(script)
             return result.startswith("COMPLETED:")
-        except Exception:
-            return False
+        except Exception as e:
+            # Returning False here made a FAILED COMPLETION look like "todo not found" — the caller
+            # prints "❌ Todo not found with ID". A permission failure and a bad id are different facts
+            # and must not share a message.
+            raise RuntimeError(f"complete_todo_by_id({todo_id}) failed: {e}") from e
 
     @staticmethod
     def search_todos(query: str) -> list[dict[str, Any]]:
@@ -217,11 +228,9 @@ class AppleScriptHandler:
             return normalized_todos
             
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from search: {e}")
-            return []
+            raise RuntimeError(f"search_todos returned unparseable output: {e}") from e
         except Exception as e:
-            print(f"Error searching todos: {e}")
-            return []
+            raise RuntimeError(f"search_todos failed: {e}") from e
 
     @staticmethod
     def get_today_count() -> int:
@@ -277,8 +286,7 @@ class AppleScriptHandler:
             return AppleScriptHandler.normalize_task(todo)
 
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from get_todo_by_id: {e}")
-            return {}
+            raise RuntimeError(f"get_todo_by_id returned unparseable output: {e}") from e
         except subprocess.CalledProcessError as e:
             error_msg = "AppleScript failed: get_todo_by_id\n"
             if e.stderr:
@@ -319,8 +327,7 @@ class AppleScriptHandler:
             return json.loads(output)
 
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from project details: {e}")
-            return {}
+            raise RuntimeError(f"get_project_details returned unparseable output: {e}") from e
         except subprocess.CalledProcessError as e:
             error_msg = "AppleScript failed: get_project_details\n"
             if e.stderr:
@@ -376,8 +383,7 @@ class AppleScriptHandler:
             return normalized_todos
 
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from project todos: {e}")
-            return []
+            raise RuntimeError(f"get_todos_for_project returned unparseable output: {e}") from e
         except subprocess.CalledProcessError as e:
             error_msg = "AppleScript failed: get_todos_for_project\n"
             if e.stderr:
@@ -509,8 +515,9 @@ class AppleScriptHandler:
             return normalized_tasks
             
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from list tasks: {e}")
-            return []
+            raise RuntimeError(f"get_tasks_from_list({list_name}) returned unparseable output: {e}") from e
         except Exception as e:
-            print(f"Error retrieving tasks from list '{list_name}': {e}")
-            return []
+            # THE ONE THAT MATTERED MOST. view-todos and verify-after-write both read through here, so a
+            # TCC Automation denial surfaced as "No todos found in Today list" — indistinguishable from an
+            # empty Today. Kevin would see an empty task list and no fault.
+            raise RuntimeError(f"get_tasks_from_list({list_name}) failed: {e}") from e

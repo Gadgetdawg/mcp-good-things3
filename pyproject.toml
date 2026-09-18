@@ -1,6 +1,6 @@
 [project]
 name = "things3-mcp"
-version = "0.2.3"
+version = "0.2.4"
 description = "A server implementation for interacting with Things3 app on macOS through Claude AI"
 readme = "README.md"
 license = {text = "MIT"}
