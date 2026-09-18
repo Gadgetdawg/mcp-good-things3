@@ -796,31 +796,48 @@ def _find_recently_created_todo(title: str, list_id: str = None, when: str = Non
     Returns the full todo dict from get_todo_by_id(), or {} if not found. NOT FINDING IT IS A VALID
     RESULT — the caller says so plainly rather than falling back to a scan.
     """
+    import time
     try:
-        # Small delay so Things3 has a chance to commit the write
-        import time
-        time.sleep(0.4)
+        # RETRY, DO NOT JUST SLEEP LONGER. `open things:///add` is ASYNCHRONOUS: it returns as soon as the
+        # URL is handed to Things, and Things files the item some time after that. A fixed 0.4s wait is not
+        # enough — verified in production 2026-09-18, where the item was demonstrably in Today and the
+        # lookup still reported "could not locate just-created record".
+        #
+        # THE ORIGINAL CODE HID THIS. Its full-database scan took ~64 seconds, which accidentally acted as
+        # the wait: by the time the scan finished the item had long since been filed. Replacing the scan
+        # with a fast scoped read removed a delay nobody had noticed was load-bearing — a speedup that
+        # silently broke the correctness it was built to protect.
+        #
+        # A longer blind sleep would pay the worst case on every call. Retrying pays it only when needed,
+        # and each bounded list read is itself another second or two of grace.
+        attempts = 4
+        for i in range(attempts):
+            time.sleep(0.4 if i == 0 else 1.0)
 
-        # Most precise case: an explicit project/area id. One bounded read.
-        if list_id:
-            try:
-                project_todos = AppleScriptHandler.get_todos_for_project(list_id, include_completed=False)
-            except Exception:
-                project_todos = []
-            found = _best_by_title(project_todos, title)
-            if found:
-                return found
-            # fall through to the built-in lists: `when` can override where an item is filed
+            # Most precise case: an explicit project/area id. One bounded read.
+            if list_id:
+                try:
+                    project_todos = AppleScriptHandler.get_todos_for_project(list_id, include_completed=False)
+                except Exception:
+                    project_todos = []
+                found = _best_by_title(project_todos, title)
+                if found:
+                    return found
+                # fall through: `when` can override where an item is filed
 
-        for scope in _scopes_for_new_todo(when=when, list_name=list_name):
-            try:
-                todos = AppleScriptHandler.get_tasks_from_list(scope) or []
-            except Exception as e:
-                logger.warning(f"verify-after-write: could not read list {scope}: {e}")
-                continue
-            found = _best_by_title(todos, title)
-            if found:
-                return found
+            for scope in _scopes_for_new_todo(when=when, list_name=list_name):
+                try:
+                    todos = AppleScriptHandler.get_tasks_from_list(scope) or []
+                except Exception as e:
+                    logger.warning(f"verify-after-write: could not read list {scope}: {e}")
+                    continue
+                found = _best_by_title(todos, title)
+                if found:
+                    if i:
+                        logger.info(f"verify-after-write: found on attempt {i + 1}")
+                    return found
+
+        logger.warning(f"verify-after-write: '{title}' not found after {attempts} attempts")
         return {}
     except Exception as e:
         logger.warning(f"verify-after-write lookup failed: {e}")
